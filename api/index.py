@@ -161,22 +161,97 @@ def index():
 
 @app.route('/analyze', methods=['POST'])
 def detect():
+    # === Capture Image ===
     img_path = capture_image_with_libcamera()
-    if img_path:
-        frame = cv2.imread(img_path)
-        chicken_detected, annotated_frame = detect_chicken(frame)
-        annotated_path = "static/annotated_frame.jpg"
-        cv2.imwrite(annotated_path, annotated_frame)
+    if not img_path:
+        return render_template('index.html', message="Failed to capture image")
 
-        if chicken_detected:
-            predicted_label = predict_disease(model, img_path, class_labels)
-            return render_template('index.html',
-                                   disease=predicted_label)
-        else:
-            return render_template('index.html',
-                                   message="No chicken detected")
-    return render_template('index.html',
-                           message="Failed to capture image")
+    frame = cv2.imread(img_path)
+
+    # === Lazy-load YOLO ===
+    def get_yolo():
+        yolo_config_path = download_yolo_file("yolov3.cfg")
+        yolo_weights_path = download_yolo_file("yolov3.weights")
+        yolo_labels_path = download_yolo_file("coco.names")
+
+        net = cv2.dnn.readNet(yolo_weights_path, yolo_config_path)
+        layer_names = net.getLayerNames()
+        output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+        with open(yolo_labels_path, 'r') as f:
+            classes = [line.strip() for line in f.readlines()]
+        return net, output_layers, classes
+
+    net, output_layers, classes = get_yolo()
+
+    # === Detect Chicken ===
+    def detect_chicken(frame):
+        height, width, _ = frame.shape
+        blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+        net.setInput(blob)
+        outs = net.forward(output_layers)
+
+        class_ids, confidences, boxes = [], [], []
+
+        for out in outs:
+            for detection in out:
+                scores = detection[5:]
+                class_id = np.argmax(scores)
+                confidence = scores[class_id]
+                if class_id < len(classes) and classes[class_id] == 'bird' and confidence > 0.5:
+                    center_x, center_y = int(detection[0] * width), int(detection[1] * height)
+                    w, h = int(detection[2] * width), int(detection[3] * height)
+                    x, y = int(center_x - w / 2), int(center_y - h / 2)
+                    boxes.append([x, y, w, h])
+                    confidences.append(float(confidence))
+                    class_ids.append(class_id)
+
+        indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+        if len(indexes) > 0:
+            for i in indexes.flatten():
+                x, y, w, h = boxes[i]
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                label = f"{classes[class_ids[i]]} {confidences[i]:.2f}"
+                cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            return True, frame
+        return False, frame
+
+    chicken_detected, annotated_frame = detect_chicken(frame)
+    annotated_path = "static/annotated_frame.jpg"
+    cv2.imwrite(annotated_path, annotated_frame)
+
+    # === Lazy-load Model & Predict ===
+    if chicken_detected:
+        model = tf.keras.models.load_model(MODEL_PATH)
+
+        def preprocess_image(img_path, target_size=(128, 128)):
+            img = image.load_img(img_path, target_size=target_size)
+            img_array = image.img_to_array(img)
+            img_array = np.expand_dims(img_array, axis=0)
+            return img_array / 255.0
+
+        # Static class labels (no need to load dataset)
+        class_labels = {
+            0: 'Chicken Drinking water',
+            1: 'Chicken Feeding',
+            2: 'avian_influenza',
+            3: 'dead_chickens',
+            4: 'gumboro_disease',
+            5: 'healthy',
+            6: 'healthy_chicken',
+            7: 'infectious_coryza',
+            8: 'new_castles_disease',
+            9: 'splay_foot',
+        }
+
+        img_array = preprocess_image(img_path)
+        predictions = model.predict(img_array)
+        predicted_index = np.argmax(predictions, axis=1)[0]
+        predicted_label = class_labels.get(predicted_index, "Unknown")
+
+        return render_template('index.html', disease=predicted_label)
+
+    return render_template('index.html', message="No chicken detected")
+
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=8000, debug=True)

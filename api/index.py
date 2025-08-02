@@ -82,7 +82,7 @@ def download_yolo_file(filename):
             blob_name=filename
         )
         with open(local_path, "wb") as f:
-            f.write(blob.download_blob().readall())
+            f.write(blob.download_blob(timeout=300).readall())
     return local_path
 
 

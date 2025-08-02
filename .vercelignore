@@ -2,3 +2,10 @@ chicken-venv/
 disease-env/
 __pycache__/
 *.pyc
+.git
+*.zip
+*.tar.gz
+*.h5
+*.keras
+.env
+*.log

@@ -8,6 +8,7 @@ from tensorflow.keras.preprocessing import image
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from azure.storage.blob import BlobServiceClient
 from azure.storage.blob import BlobClient
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -66,10 +67,35 @@ train_generator = datagen.flow_from_directory(
 class_indices = train_generator.class_indices
 class_labels = {v: k for k, v in class_indices.items()}
 
-# YOLO model configuration
-yolo_config_path = os.path.join(ROOT_DIR, 'yolo_config_files', 'yolov3.cfg')
-yolo_weights_path = os.path.join(ROOT_DIR, 'yolo_config_files', 'yolov3.weights')
-yolo_labels_path = os.path.join(ROOT_DIR, 'yolo_config_files', 'coco.names')
+
+YOLO_CONTAINER_NAME = os.getenv("YOLO_CONTAINER_NAME", "yolo")
+
+YOLO_DIR = "/tmp/yolo"
+os.makedirs(YOLO_DIR, exist_ok=True)
+
+def download_yolo_file(filename):
+    local_path = os.path.join(YOLO_DIR, filename)
+    if not os.path.exists(local_path):
+        blob = BlobClient.from_connection_string(
+            conn_str=AZURE_CONN_STR,
+            container_name=YOLO_CONTAINER_NAME,
+            blob_name=filename
+        )
+        with open(local_path, "wb") as f:
+            f.write(blob.download_blob().readall())
+    return local_path
+
+
+# List of YOLO files to download
+yolo_filenames = ["yolov3.cfg", "yolov3.weights", "coco.names"]
+
+# Download in parallel using ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=3) as executor:
+    paths = list(executor.map(download_yolo_file, yolo_filenames))
+
+# Assign the returned paths
+yolo_config_path, yolo_weights_path, yolo_labels_path = paths
+
 
 # Load YOLO
 net = cv2.dnn.readNet(yolo_weights_path, yolo_config_path)
@@ -78,6 +104,7 @@ output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 
 with open(yolo_labels_path, 'r') as f:
     classes = [line.strip() for line in f.readlines()]
+
 
 # Function to detect chickens using YOLO
 def detect_chicken(frame):
@@ -153,4 +180,3 @@ def detect():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
-

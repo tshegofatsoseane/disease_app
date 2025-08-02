@@ -1,5 +1,34 @@
-chicken-venv/
-disease-env/
-*.pyc
-.env
+# Python artifacts
 __pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+env/
+*.egg-info/
+*.eggs/
+.chicken-venv/
+.disease-env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model & log files
+*.h5
+*.keras
+*.log
+
+# Archives
+*.zip
+*.tar.gz
+
+# Environment
+.env
+.env.*
+
+# OS stuff
+.DS_Store
+Thumbs.db
+
+# Git
+.git

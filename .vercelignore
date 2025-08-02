@@ -1,0 +1,4 @@
+chicken-venv/
+disease-env/
+__pycache__/
+*.pyc

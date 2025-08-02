@@ -1,0 +1,36 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+env/
+chicken-venv/
+disease-env/
+
+# Model and logs
+*.h5
+*.keras
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS and IDE stuff
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Archives
+*.zip
+*.tar.gz
+
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+

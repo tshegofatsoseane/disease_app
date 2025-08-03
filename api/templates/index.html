@@ -12,55 +12,88 @@
   <div class="container py-5">
     <h1 class="mb-4">🐔 Chicken Disease Detector</h1>
 
-    <!-- Form for local capture -->
-    <form action="{{ url_for('detect') }}" method="post">
-      <button type="submit" class="btn btn-primary mb-3">📷 Capture & Analyze (Local)</button>
+    <!-- Form for local upload -->
+    <form action="{{ url_for('analyze') }}" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept="image/*" required class="form-control mb-2" />
+      <button type="submit" class="btn btn-primary mb-3">📷 Upload & Analyze (Local)</button>
     </form>
 
     <!-- Button to trigger remote Pi capture -->
     <button onclick="sendCommand()" class="btn btn-success mb-4">📡 Trigger Raspberry Pi Detection</button>
 
     <!-- Feedback messages -->
-    {% if disease %}
-      <div class="alert alert-info">
-        <h4>Result:</h4>
-        <p><strong>Disease:</strong> {{ disease }}</p>
-      </div>
-      <div class="mb-3">
-        <h5>Annotated Image:</h5>
-        <img src="{{ url_for('static', filename='annotated_frame.jpg') }}"
-             alt="Annotated Frame"
-             class="img-fluid border">
-      </div>
-    {% elif message %}
-      <div class="alert alert-warning">
-        <p>{{ message }}</p>
-      </div>
-    {% endif %}
+    <div id="result-container">
+      {% if disease %}
+        <div class="alert alert-info">
+          <h4>Result:</h4>
+          <p><strong>Disease:</strong> {{ disease }}</p>
+        </div>
+        <div class="mb-3">
+          <h5>Annotated Image:</h5>
+          <img src="{{ url_for('static', filename='annotated_frame.jpg') }}"
+               alt="Annotated Frame"
+               class="img-fluid border" />
+        </div>
+      {% elif message %}
+        <div class="alert alert-warning">
+          <p>{{ message }}</p>
+        </div>
+      {% endif %}
+    </div>
   </div>
 
-  <!-- JS to send command to /command -->
   <script>
+    // Send capture command to the server
     function sendCommand() {
       fetch("/command", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ action: "capture" })
+        body: JSON.stringify({action: "capture"})
       })
-      .then(res => res.json())
+      .then(response => response.json())
       .then(data => {
-        alert("📨 Command sent to Raspberry Pi: " + data.action);
+        console.log("Command response:", data);
+        pollResult(); // Start polling for result
       })
       .catch(err => {
-        alert("❌ Failed to send command: " + err);
+        console.error("Error sending command:", err);
       });
     }
-  </script>
 
-  <!-- Bootstrap JS -->
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    // Poll /result every 3 seconds to get latest detection result
+    function pollResult() {
+      const interval = setInterval(() => {
+        fetch("/result")
+          .then(response => response.json())
+          .then(data => {
+            if (data.disease) {
+              clearInterval(interval);
+              showResult(data);
+            }
+          })
+          .catch(err => {
+            console.error("Error fetching result:", err);
+          });
+      }, 3000);
+    }
+
+    // Update the page dynamically with result
+    function showResult(data) {
+      const container = document.getElementById("result-container");
+      container.innerHTML = `
+        <div class="alert alert-info">
+          <h4>Result:</h4>
+          <p><strong>Disease:</strong> ${data.disease}</p>
+        </div>
+        <div class="mb-3">
+          <h5>Annotated Image:</h5>
+          <img src="${data.image_url}" alt="Annotated Frame" class="img-fluid border" />
+        </div>
+      `;
+    }
+  </script>
 </body>
 </html>
 

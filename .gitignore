@@ -7,8 +7,8 @@ venv/
 env/
 *.egg-info/
 *.eggs/
-.chicken-venv/
-.disease-env/
+chicken-venv/
+disease-env/
 
 # Jupyter
 .ipynb_checkpoints/

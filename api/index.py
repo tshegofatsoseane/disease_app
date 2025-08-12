@@ -1,92 +1,137 @@
 import os
+import io
 import time
+import json
+import logging
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import cv2
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-import tensorflow as tf
 from flask import Flask, request, jsonify, render_template, url_for
 from tensorflow.keras.preprocessing import image
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from azure.storage.blob import BlobClient
-from concurrent.futures import ThreadPoolExecutor
-from dotenv import load_dotenv
+import tensorflow as tf
 from werkzeug.utils import secure_filename
+from azure.storage.blob import BlobClient
+from dotenv import load_dotenv
 
 load_dotenv()
 
-app = Flask(__name__)
-
+# --- Configuration ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
+APP_STATIC = os.path.join(BASE_DIR, 'static')
+os.makedirs(APP_STATIC, exist_ok=True)
 
-AZURE_CONN_STR = os.getenv("AZURE_STORAGE_CONN_STRING")
-CONTAINER_NAME = os.getenv("AZURE_CONTAINER", "models")
-BLOB_NAME = os.getenv("AZURE_BLOB_NAME", "model.keras")
+AZURE_CONN_STR = os.getenv('AZURE_STORAGE_CONN_STRING')
+CONTAINER_NAME = os.getenv('AZURE_CONTAINER', 'models')
+BLOB_NAME = os.getenv('AZURE_BLOB_NAME', 'model.keras')
 
-MODEL_PATH = "/tmp/model.keras"
-
-def load_model():
-    if not os.path.exists(MODEL_PATH):
-        blob = BlobClient.from_connection_string(
-            conn_str=AZURE_CONN_STR,
-            container_name=CONTAINER_NAME,
-            blob_name=BLOB_NAME
-        )
-        content = blob.download_blob().readall()
-        with open(MODEL_PATH, "wb") as f:
-            f.write(content)
-    return tf.keras.models.load_model(MODEL_PATH)
-
-model = load_model()
-
-# Mapping class indices to class names
-prepared_directory = os.path.join(ROOT_DIR, 'prepared_dataset')
-
-datagen = ImageDataGenerator(rescale=1./255)
-train_generator = datagen.flow_from_directory(
-    prepared_directory,
-    target_size=(128, 128),
-    batch_size=32,
-    class_mode='categorical'
-)
-class_indices = train_generator.class_indices
-class_labels_map = {v: k for k, v in class_indices.items()}
-
-YOLO_CONTAINER_NAME = os.getenv("YOLO_CONTAINER_NAME", "yolo")
-
-YOLO_DIR = "/tmp/yolo"
+YOLO_CONTAINER_NAME = os.getenv('YOLO_CONTAINER_NAME', 'yolo')
+YOLO_DIR = os.path.join('/tmp', 'yolo')
 os.makedirs(YOLO_DIR, exist_ok=True)
 
-def download_yolo_file(filename):
-    local_path = os.path.join(YOLO_DIR, filename)
-    if not os.path.exists(local_path):
-        blob = BlobClient.from_connection_string(
-            conn_str=AZURE_CONN_STR,
-            container_name=YOLO_CONTAINER_NAME,
-            blob_name=filename
-        )
-        with open(local_path, "wb") as f:
-            f.write(blob.download_blob(timeout=300).readall())
-    return local_path
+MODEL_PATH = os.path.join('/tmp', 'model.keras')
+ANNOTATED_FILENAME = 'annotated_frame.jpg'
+ANNOTATED_PATH = os.path.join(APP_STATIC, ANNOTATED_FILENAME)
 
-# Download YOLO files in parallel
-yolo_filenames = ["yolov3.cfg", "yolov3.weights", "coco.names"]
-with ThreadPoolExecutor(max_workers=3) as executor:
-    paths = list(executor.map(download_yolo_file, yolo_filenames))
+# Logging
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger('cdd_server')
 
-yolo_config_path, yolo_weights_path, yolo_labels_path = paths
+app = Flask(__name__, static_folder='static', template_folder='templates')
 
-net = cv2.dnn.readNet(yolo_weights_path, yolo_config_path)
-layer_names = net.getLayerNames()
-output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+# In-memory state
+current_command = {'action': 'idle'}
+last_detection = {'disease': None, 'image_path': None, 'timestamp': None}
+history = []
+HISTORY_LIMIT = int(os.getenv('HISTORY_LIMIT', '50'))
 
-with open(yolo_labels_path, 'r') as f:
-    classes = [line.strip() for line in f.readlines()]
+# --- Helpers: Azure blob download (if configured) ---
 
-# Shared states
-current_command = {"action": "idle"}
-last_detection = {"disease": None, "image_path": None}
+def download_blob_to_local(container_name, blob_name, local_path, timeout=300):
+    if not AZURE_CONN_STR:
+        log.info('No AZURE_CONN_STR configured; skipping blob download for %s', blob_name)
+        return False
+
+    log.info('Downloading blob %s/%s -> %s', container_name, blob_name, local_path)
+    blob = BlobClient.from_connection_string(conn_str=AZURE_CONN_STR,
+                                            container_name=container_name,
+                                            blob_name=blob_name)
+    with open(local_path, 'wb') as f:
+        f.write(blob.download_blob(timeout=timeout).readall())
+    return True
+
+# --- Model loading ---
+
+def load_keras_model():
+    # If model doesn't exist on disk try to download from Azure
+    if not os.path.exists(MODEL_PATH):
+        if AZURE_CONN_STR:
+            try:
+                download_blob_to_local(CONTAINER_NAME, BLOB_NAME, MODEL_PATH)
+            except Exception as e:
+                log.exception('Failed to download model from Azure: %s', e)
+        else:
+            log.warning('MODEL_PATH missing and no Azure connection string; expecting a local model at %s', MODEL_PATH)
+
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f'Model file not found at {MODEL_PATH}')
+
+    log.info('Loading Keras model from %s', MODEL_PATH)
+    model = tf.keras.models.load_model(MODEL_PATH)
+    return model
+
+# Try to load model; handle errors gracefully
+try:
+    model = load_keras_model()
+except Exception as e:
+    log.exception('Could not load model: %s', e)
+    model = None
+
+# --- YOLO setup ---
+
+yolo_files = {
+    'cfg': 'yolov3.cfg',
+    'weights': 'yolov3.weights',
+    'names': 'coco.names'
+}
+
+def download_yolo_files():
+    for key, fname in yolo_files.items():
+        dst = os.path.join(YOLO_DIR, fname)
+        if not os.path.exists(dst):
+            try:
+                download_blob_to_local(YOLO_CONTAINER_NAME, fname, dst)
+            except Exception as e:
+                log.warning('Could not download YOLO file %s: %s', fname, e)
+
+# attempt download (safe if AZURE not configured)
+download_yolo_files()
+
+yolo_cfg = os.path.join(YOLO_DIR, yolo_files['cfg'])
+yolo_weights = os.path.join(YOLO_DIR, yolo_files['weights'])
+yolo_names = os.path.join(YOLO_DIR, yolo_files['names'])
+
+net = None
+classes = []
+output_layers = []
+
+if os.path.exists(yolo_cfg) and os.path.exists(yolo_weights) and os.path.exists(yolo_names):
+    try:
+        net = cv2.dnn.readNet(yolo_weights, yolo_cfg)
+        layer_names = net.getLayerNames()
+        # getUnconnectedOutLayers may return shape (N,1) or a list of ints
+        outs = net.getUnconnectedOutLayers()
+        output_layers = [layer_names[i[0] - 1] if hasattr(i, '__len__') else layer_names[i - 1] for i in outs]
+        with open(yolo_names, 'r') as f:
+            classes = [line.strip() for line in f.readlines() if line.strip()]
+        log.info('YOLO loaded with %d classes', len(classes))
+    except Exception as e:
+        log.exception('Error initializing YOLO: %s', e)
+else:
+    log.warning('YOLO files not found in %s. Chicken detection will be disabled.', YOLO_DIR)
+
+# --- Image helpers ---
 
 def preprocess_image(img_path, target_size=(128, 128)):
     img = image.load_img(img_path, target_size=target_size)
@@ -94,122 +139,222 @@ def preprocess_image(img_path, target_size=(128, 128)):
     img_array = np.expand_dims(img_array, axis=0) / 255.0
     return img_array
 
-def detect_chicken(frame):
-    height, width, _ = frame.shape
-    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+
+def detect_chicken(frame, conf_threshold=0.5, nms_threshold=0.4):
+    """Return (found_boolean, annotated_frame). If YOLO isn't available return (True, frame) to let
+    classifier run as a best-effort (you can change the default behavior).
+    """
+    if net is None or not classes:
+        log.debug('YOLO not available; skipping chicken bounding box detection (optimistic pass)')
+        return True, frame
+
+    height, width = frame.shape[:2]
+    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), swapRB=True, crop=False)
     net.setInput(blob)
     outs = net.forward(output_layers)
 
-    class_ids, confidences, boxes = [], [], []
+    class_ids = []
+    confidences = []
+    boxes = []
 
     for out in outs:
         for detection in out:
             scores = detection[5:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
-            if class_id < len(classes) and classes[class_id] == 'bird' and confidence > 0.5:
-                center_x, center_y = int(detection[0] * width), int(detection[1] * height)
-                w, h = int(detection[2] * width), int(detection[3] * height)
-                x, y = int(center_x - w / 2), int(center_y - h / 2)
+            if len(scores) == 0:
+                continue
+            class_id = int(np.argmax(scores))
+            confidence = float(scores[class_id])
+            if class_id < len(classes) and classes[class_id] == 'bird' and confidence > conf_threshold:
+                center_x = int(detection[0] * width)
+                center_y = int(detection[1] * height)
+                w = int(detection[2] * width)
+                h = int(detection[3] * height)
+                x = int(center_x - w / 2)
+                y = int(center_y - h / 2)
                 boxes.append([x, y, w, h])
-                confidences.append(float(confidence))
+                confidences.append(confidence)
                 class_ids.append(class_id)
 
-    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-    if len(indexes) > 0:
-        for i in indexes.flatten():
-            x, y, w, h = boxes[i]
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            label = f"{classes[class_ids[i]]} {confidences[i]:.2f}"
-            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        return True, frame
-    return False, frame
+    if len(boxes) == 0:
+        return False, frame
+
+    idxs = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, nms_threshold)
+    if len(idxs) == 0:
+        return False, frame
+
+    for i in idxs.flatten():
+        x, y, w, h = boxes[i]
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        label = f"{classes[class_ids[i]]} {confidences[i]:.2f}"
+        cv2.putText(frame, label, (max(x,0), max(y - 8, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
+
+    return True, frame
+
+# Default/fallback class map (keeps labels consistent even without the training generator available)
+FALLBACK_CLASS_MAP = {
+    0: 'Chicken Drinking water',
+    1: 'Chicken Feeding',
+    2: 'avian_influenza',
+    3: 'dead_chickens',
+    4: 'gumboro_disease',
+    5: 'healthy',
+    6: 'healthy_chicken',
+    7: 'infectious_coryza',
+    8: 'new_castles_disease',
+    9: 'splay_foot',
+}
+
+# Try to infer class mapping from a prepared dataset if present (optional)
+class_labels_map = None
+try:
+    from tensorflow.keras.preprocessing.image import ImageDataGenerator
+    prepared_dir = os.path.join(BASE_DIR, 'prepared_dataset')
+    if os.path.exists(prepared_dir):
+        datagen = ImageDataGenerator(rescale=1./255)
+        gen = datagen.flow_from_directory(prepared_dir, target_size=(128,128), batch_size=1, class_mode='categorical')
+        class_indices = gen.class_indices
+        class_labels_map = {v: k for k, v in class_indices.items()}
+        log.info('Derived class labels map from prepared_dataset with %d classes', len(class_labels_map))
+    else:
+        log.info('No prepared_dataset directory found; will use fallback labels')
+except Exception as e:
+    log.warning('Could not derive class labels map: %s', e)
+
+# --- Flask routes ---
 
 @app.route('/', methods=['GET'])
 def index():
-    return render_template('index.html')
+    # simple health endpoint + the UI
+    try:
+        return render_template('index.html')
+    except Exception:
+        # If no template present (during quick tests) return basic JSON health
+        return jsonify({'status': 'ok'}), 200
+
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
     if 'file' not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+        return jsonify({'error': 'No file uploaded'}), 400
 
     uploaded_file = request.files['file']
     if uploaded_file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
+        return jsonify({'error': 'No file selected'}), 400
 
     filename = secure_filename(uploaded_file.filename)
-    img_path = os.path.join("/tmp", filename)
-    uploaded_file.save(img_path)
+    tmp_path = os.path.join('/tmp', f"upload_{int(time.time())}_{filename}")
+    uploaded_file.save(tmp_path)
 
-    frame = cv2.imread(img_path)
+    frame = cv2.imread(tmp_path)
     if frame is None:
-        return jsonify({"error": "Uploaded file is not a valid image"}), 400
+        return jsonify({'error': 'Uploaded file is not a valid image'}), 400
 
+    # Run chicken detection (YOLO). If YOLO not available the function currently returns True.
     chicken_detected, annotated_frame = detect_chicken(frame)
-    annotated_path = os.path.join(app.static_folder, 'annotated_frame.jpg')
-    cv2.imwrite(annotated_path, annotated_frame)
-    image_url = url_for('static', filename='annotated_frame.jpg')
 
-    if chicken_detected:
-        img_array = preprocess_image(img_path)
-        predictions = model.predict(img_array)
-        predicted_index = int(np.argmax(predictions, axis=1)[0])
-        predicted_label = class_labels_map.get(predicted_index)
-        if not predicted_label:
-            class_labels = {
-                0: 'Chicken Drinking water',
-                1: 'Chicken Feeding',
-                2: 'avian_influenza',
-                3: 'dead_chickens',
-                4: 'gumboro_disease',
-                5: 'healthy',
-                6: 'healthy_chicken',
-                7: 'infectious_coryza',
-                8: 'new_castles_disease',
-                9: 'splay_foot',
-            }
-            predicted_label = class_labels.get(predicted_index, "Unknown")
+    # save annotated image to static
+    try:
+        cv2.imwrite(ANNOTATED_PATH, annotated_frame)
+    except Exception as e:
+        log.exception('Failed to write annotated image: %s', e)
 
-        last_detection["disease"] = predicted_label
-        last_detection["image_path"] = image_url
+    image_url = url_for('static', filename=ANNOTATED_FILENAME)
 
-        return jsonify({
-            "disease": predicted_label,
-            "image_url": image_url,
-            "note": "Model suggestions — consult a vet for confirmation."
-        })
+    if not chicken_detected:
+        # Update last detection (no chicken)
+        last_detection.update({'disease': None, 'image_path': image_url, 'timestamp': datetime.utcnow().isoformat()})
+        return jsonify({'error': 'No chicken detected', 'image_url': image_url}), 200
 
-    last_detection["disease"] = None
-    last_detection["image_path"] = None
-    return jsonify({"error": "No chicken detected", "image_url": image_url}), 200
+    # If we have a model, run classifier
+    predicted_label = None
+    try:
+        if model is None:
+            log.warning('No model loaded; returning fallback label')
+            predicted_label = 'unknown_model'
+        else:
+            img_array = preprocess_image(tmp_path)
+            preds = model.predict(img_array)
+            if preds is None:
+                predicted_label = 'prediction_failed'
+            else:
+                predicted_index = int(np.argmax(preds, axis=1)[0])
+                # map index to label
+                if class_labels_map and isinstance(class_labels_map, dict) and predicted_index in class_labels_map:
+                    predicted_label = class_labels_map[predicted_index]
+                else:
+                    predicted_label = FALLBACK_CLASS_MAP.get(predicted_index, f'class_{predicted_index}')
+    except Exception as e:
+        log.exception('Prediction error: %s', e)
+        predicted_label = 'prediction_error'
+
+    # record detection
+    now = datetime.utcnow().isoformat()
+    last_detection.update({'disease': predicted_label, 'image_path': image_url, 'timestamp': now})
+
+    # add to history (keep most recent first)
+    history.insert(0, {'disease': predicted_label, 'image_url': image_url, 'timestamp': now})
+    while len(history) > HISTORY_LIMIT:
+        history.pop()
+
+    response = {
+        'disease': predicted_label,
+        'image_url': image_url,
+        'note': 'Model suggestions — consult a vet for confirmation.'
+    }
+
+    return jsonify(response), 200
+
 
 @app.route('/result', methods=['GET'])
 def get_result():
-    if last_detection["disease"]:
+    if last_detection.get('disease'):
         return jsonify({
-            "disease": last_detection["disease"],
-            "image_url": last_detection["image_path"]
+            'disease': last_detection.get('disease'),
+            'image_url': last_detection.get('image_path'),
+            'timestamp': last_detection.get('timestamp')
         })
-    else:
-        return jsonify({"disease": None})
+    # still return an image path for UI fallbacks
+    if os.path.exists(ANNOTATED_PATH):
+        return jsonify({'disease': None, 'image_url': url_for('static', filename=ANNOTATED_FILENAME)}), 200
+    return jsonify({'disease': None}), 200
+
+
+@app.route('/history', methods=['GET'])
+def get_history():
+    return jsonify({'history': history}), 200
+
 
 @app.route('/command', methods=['GET'])
 def get_command():
     return jsonify(current_command)
 
+
 @app.route('/command', methods=['POST'])
 def set_command():
-    data = request.get_json()
-    if not data or "action" not in data:
-        return jsonify({"error": "Missing 'action' in JSON body"}), 400
-    
-    action = data["action"]
-    if action not in ["idle", "capture"]:
-        return jsonify({"error": "Invalid action"}), 400
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return jsonify({'error': "Invalid JSON"}), 400
 
-    current_command["action"] = action
-    return jsonify({"status": "command set", "action": action})
+    if not data or 'action' not in data:
+        return jsonify({'error': "Missing 'action' in JSON body"}), 400
 
+    action = data['action']
+    if action not in ['idle', 'capture']:
+        return jsonify({'error': 'Invalid action'}), 400
+
+    current_command['action'] = action
+    current_command['timestamp'] = datetime.utcnow().isoformat()
+
+    # If capture, optionally we could enqueue something. For now just acknowledge.
+    return jsonify({'status': 'command set', 'action': action}), 200
+
+
+# --- Run server ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # recommended Python packages:
+    # pip install flask tensorflow opencv-python-headless azure-storage-blob python-dotenv
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', '8000'))
+    debug = os.getenv('FLASK_DEBUG', 'false').lower() in ('1', 'true', 'yes')
+    app.run(host=host, port=port, debug=debug)

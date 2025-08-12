@@ -6,10 +6,11 @@ import tensorflow as tf
 from flask import Flask, request, jsonify, render_template, url_for
 from tensorflow.keras.preprocessing import image
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from azure.storage.blob import BlobServiceClient
 from azure.storage.blob import BlobClient
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
+from werkzeug.utils import secure_filename
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -67,10 +68,8 @@ def download_yolo_file(filename):
             f.write(blob.download_blob(timeout=300).readall())
     return local_path
 
-# List of YOLO files to download
+# Download YOLO files in parallel
 yolo_filenames = ["yolov3.cfg", "yolov3.weights", "coco.names"]
-
-# Download in parallel using ThreadPoolExecutor
 with ThreadPoolExecutor(max_workers=3) as executor:
     paths = list(executor.map(download_yolo_file, yolo_filenames))
 
@@ -83,20 +82,14 @@ output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 with open(yolo_labels_path, 'r') as f:
     classes = [line.strip() for line in f.readlines()]
 
-# Shared command state
+# Shared states
 current_command = {"action": "idle"}
-
-# Shared last detection result state
-last_detection = {
-    "disease": None,
-    "image_path": None
-}
+last_detection = {"disease": None, "image_path": None}
 
 def preprocess_image(img_path, target_size=(128, 128)):
     img = image.load_img(img_path, target_size=target_size)
     img_array = image.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
-    img_array = img_array / 255.0  # Rescale to [0, 1]
+    img_array = np.expand_dims(img_array, axis=0) / 255.0
     return img_array
 
 def detect_chicken(frame):
@@ -135,9 +128,7 @@ def index():
     return render_template('index.html')
 
 @app.route('/analyze', methods=['POST'])
-@app.route('/analyze', methods=['POST'])
 def analyze():
-    # Accept file uploaded under key 'file'
     if 'file' not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -154,24 +145,16 @@ def analyze():
         return jsonify({"error": "Uploaded file is not a valid image"}), 400
 
     chicken_detected, annotated_frame = detect_chicken(frame)
-
-    # write annotated image to Flask static folder
     annotated_path = os.path.join(app.static_folder, 'annotated_frame.jpg')
     cv2.imwrite(annotated_path, annotated_frame)
-
     image_url = url_for('static', filename='annotated_frame.jpg')
 
     if chicken_detected:
-        # Preprocess and predict disease
         img_array = preprocess_image(img_path)
         predictions = model.predict(img_array)
         predicted_index = int(np.argmax(predictions, axis=1)[0])
-
-        # Prefer class_labels_map if you built it from ImageDataGenerator,
-        # otherwise fall back to your hardcoded mapping:
-        predicted_label = class_labels_map.get(predicted_index) if 'class_labels_map' in globals() else None
+        predicted_label = class_labels_map.get(predicted_index)
         if not predicted_label:
-            # fallback to your mapping
             class_labels = {
                 0: 'Chicken Drinking water',
                 1: 'Chicken Feeding',
@@ -186,7 +169,6 @@ def analyze():
             }
             predicted_label = class_labels.get(predicted_index, "Unknown")
 
-        # Update shared last detection result
         last_detection["disease"] = predicted_label
         last_detection["image_path"] = image_url
 
@@ -196,18 +178,16 @@ def analyze():
             "note": "Model suggestions — consult a vet for confirmation."
         })
 
-    # No chicken detected
     last_detection["disease"] = None
     last_detection["image_path"] = None
     return jsonify({"error": "No chicken detected", "image_url": image_url}), 200
-
 
 @app.route('/result', methods=['GET'])
 def get_result():
     if last_detection["disease"]:
         return jsonify({
             "disease": last_detection["disease"],
-            "image_url": last_detection["image_path"] or url_for('static', filename='annotated_frame.jpg')
+            "image_url": last_detection["image_path"]
         })
     else:
         return jsonify({"disease": None})
@@ -229,16 +209,5 @@ def set_command():
     current_command["action"] = action
     return jsonify({"status": "command set", "action": action})
 
-@app.route('/result', methods=['GET'])
-def get_result():
-    if last_detection["disease"]:
-        return jsonify({
-            "disease": last_detection["disease"],
-            "image_url": last_detection["image_path"]
-        })
-    else:
-        return jsonify({"disease": None})
-
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
-

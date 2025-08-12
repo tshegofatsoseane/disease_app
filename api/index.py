@@ -135,62 +135,82 @@ def index():
     return render_template('index.html')
 
 @app.route('/analyze', methods=['POST'])
+@app.route('/analyze', methods=['POST'])
 def analyze():
     # Accept file uploaded under key 'file'
     if 'file' not in request.files:
-        return render_template('index.html', message="No file uploaded")
+        return jsonify({"error": "No file uploaded"}), 400
 
     uploaded_file = request.files['file']
     if uploaded_file.filename == '':
-        return render_template('index.html', message="No file selected")
+        return jsonify({"error": "No file selected"}), 400
 
-    img_path = os.path.join("/tmp", uploaded_file.filename)
+    filename = secure_filename(uploaded_file.filename)
+    img_path = os.path.join("/tmp", filename)
     uploaded_file.save(img_path)
 
     frame = cv2.imread(img_path)
     if frame is None:
-        return render_template('index.html', message="Uploaded file is not a valid image")
+        return jsonify({"error": "Uploaded file is not a valid image"}), 400
 
     chicken_detected, annotated_frame = detect_chicken(frame)
 
-    annotated_path = "static/annotated_frame.jpg"
+    # write annotated image to Flask static folder
+    annotated_path = os.path.join(app.static_folder, 'annotated_frame.jpg')
     cv2.imwrite(annotated_path, annotated_frame)
+
+    image_url = url_for('static', filename='annotated_frame.jpg')
 
     if chicken_detected:
         # Preprocess and predict disease
         img_array = preprocess_image(img_path)
         predictions = model.predict(img_array)
-        # Your class labels — update as per your actual labels
-        class_labels = {
-            0: 'Chicken Drinking water',
-            1: 'Chicken Feeding',
-            2: 'avian_influenza',
-            3: 'dead_chickens',
-            4: 'gumboro_disease',
-            5: 'healthy',
-            6: 'healthy_chicken',
-            7: 'infectious_coryza',
-            8: 'new_castles_disease',
-            9: 'splay_foot',
-        }
-        predicted_index = np.argmax(predictions, axis=1)[0]
-        predicted_label = class_labels.get(predicted_index, "Unknown")
+        predicted_index = int(np.argmax(predictions, axis=1)[0])
+
+        # Prefer class_labels_map if you built it from ImageDataGenerator,
+        # otherwise fall back to your hardcoded mapping:
+        predicted_label = class_labels_map.get(predicted_index) if 'class_labels_map' in globals() else None
+        if not predicted_label:
+            # fallback to your mapping
+            class_labels = {
+                0: 'Chicken Drinking water',
+                1: 'Chicken Feeding',
+                2: 'avian_influenza',
+                3: 'dead_chickens',
+                4: 'gumboro_disease',
+                5: 'healthy',
+                6: 'healthy_chicken',
+                7: 'infectious_coryza',
+                8: 'new_castles_disease',
+                9: 'splay_foot',
+            }
+            predicted_label = class_labels.get(predicted_index, "Unknown")
 
         # Update shared last detection result
         last_detection["disease"] = predicted_label
-        last_detection["image_path"] = "/static/annotated_frame.jpg"
+        last_detection["image_path"] = image_url
 
-        if request.is_json or request.headers.get("Accept") == "application/json":
-            return jsonify({"disease": predicted_label})
-        return render_template('index.html', disease=predicted_label)
+        return jsonify({
+            "disease": predicted_label,
+            "image_url": image_url,
+            "note": "Model suggestions — consult a vet for confirmation."
+        })
 
     # No chicken detected
     last_detection["disease"] = None
     last_detection["image_path"] = None
+    return jsonify({"error": "No chicken detected", "image_url": image_url}), 200
 
-    if request.is_json or request.headers.get("Accept") == "application/json":
-        return jsonify({"error": "No chicken detected"})
-    return render_template('index.html', message="No chicken detected")
+
+@app.route('/result', methods=['GET'])
+def get_result():
+    if last_detection["disease"]:
+        return jsonify({
+            "disease": last_detection["disease"],
+            "image_url": last_detection["image_path"] or url_for('static', filename='annotated_frame.jpg')
+        })
+    else:
+        return jsonify({"disease": None})
 
 @app.route('/command', methods=['GET'])
 def get_command():

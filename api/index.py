@@ -17,6 +17,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import requests
+import base64
+
 # --- Configuration ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_STATIC = os.path.join(BASE_DIR, 'static')
@@ -348,6 +351,59 @@ def set_command():
 
     # If capture, optionally we could enqueue something. For now just acknowledge.
     return jsonify({'status': 'command set', 'action': action}), 200
+
+
+# --- Analyze remote: forward to Raspberry Pi ---
+PI_HOST = os.getenv('PI_HOST')            # e.g. '192.168.1.55:5000' OR 'pi.example.com:5000'
+PI_TOKEN = os.getenv('PI_API_TOKEN')      # must match Pi's token
+PI_TIMEOUT = int(os.getenv('PI_TIMEOUT', '12'))  # seconds
+
+@app.route('/analyze_remote', methods=['POST'])
+def analyze_remote():
+    """
+    Forward image to a Raspberry Pi running the pi_server.py service.
+    The Pi is expected to return JSON with 'disease' and 'image_b64' fields.
+    """
+    if 'file' not in request.files:
+        return jsonify({'error':'No file uploaded'}), 400
+
+    if not PI_HOST:
+        return jsonify({'error':'PI_HOST not configured'}), 500
+
+    f = request.files['file']
+    fname = secure_filename(f.filename or 'upload.jpg')
+
+    # forward as multipart/form-data to the Pi
+    # requests needs file-like object; use stream
+    files = {'file': (fname, f.stream, f.content_type)}
+    headers = {'X-PI-TOKEN': PI_TOKEN} if PI_TOKEN else {}
+
+    try:
+        pi_url = f'http://{PI_HOST}/analyze'
+        r = requests.post(pi_url, files=files, headers=headers, timeout=PI_TIMEOUT)
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error':'pi_unreachable','detail':str(e)}), 502
+
+    # if pi returned failure code, pass that through
+    try:
+        pj = r.json()
+    except Exception:
+        return jsonify({'error':'invalid_response_from_pi','status_code': r.status_code, 'text': r.text}), 502
+
+    # If the Pi returns a base64 image, write it to static annotated file for UI compatibility
+    if 'image_b64' in pj and pj['image_b64']:
+        try:
+            imgdata = base64.b64decode(pj['image_b64'])
+            annotated_path = os.path.join(app.static_folder, 'annotated_frame.jpg')
+            with open(annotated_path, 'wb') as wf:
+                wf.write(imgdata)
+            image_url = url_for('static', filename='annotated_frame.jpg')
+            pj['image_url'] = image_url
+        except Exception as e:
+            pj['image_write_error'] = str(e)
+
+    # mirror expected fields for frontend
+    return jsonify(pj), 200
 
 
 # --- Run server ---

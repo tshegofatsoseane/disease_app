@@ -1,99 +1,633 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chicken Disease Detector</title>
-  <!-- Bootstrap CSS -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
-        rel="stylesheet">
-</head>
-<body>
-  <div class="container py-5">
-    <h1 class="mb-4">🐔 Chicken Disease Detector</h1>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chicken Disease Detector — Modern Large UI</title>
 
-    <!-- Form for local upload -->
-    <form action="{{ url_for('analyze') }}" method="post" enctype="multipart/form-data">
-      <input type="file" name="file" accept="image/*" required class="form-control mb-2" />
-      <button type="submit" class="btn btn-primary mb-3">📷 Upload & Analyze (Local)</button>
-    </form>
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
 
-    <!-- Button to trigger remote Pi capture -->
-    <button onclick="sendCommand()" class="btn btn-success mb-4">📡 Trigger Raspberry Pi Detection</button>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 
-    <!-- Feedback messages -->
-    <div id="result-container">
-      {% if disease %}
-        <div class="alert alert-info">
-          <h4>Result:</h4>
-          <p><strong>Disease:</strong> {{ disease }}</p>
+    <style>
+      :root{
+        --bg: #f7fafc;
+        --card: #ffffff;
+        --muted: #516075;
+        --accent: #0ea5a4;
+        --accent-2: #06b6d4;
+        --glass: rgba(14,165,164,0.06);
+        --radius-lg: 18px;
+      }
+
+      html,body{height:100%}
+      body{font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial;background:var(--bg);color:#0f172a;margin:0}
+
+      /* layout */
+      .app{max-width:1400px;margin:28px auto;padding:28px}
+      .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:28px}
+
+      .brand{display:flex;align-items:center;gap:16px}
+      .logo{width:72px;height:72px;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;font-weight:800;color:white;font-size:20px;box-shadow:0 8px 30px rgba(6,182,212,0.12)}
+      .title{font-size:20px;font-weight:800}
+      .subtitle{color:var(--muted);font-size:13px}
+
+      /* big grid */
+      .main-grid{display:grid;grid-template-columns:1fr 420px;gap:28px;align-items:start}
+
+      /* left panel (visual) */
+      .panel-large{background:var(--card);border-radius:var(--radius-lg);padding:22px;box-shadow:0 10px 30px rgba(15,23,42,0.06);border:1px solid rgba(15,23,42,0.04)}
+      .preview-area{height:405px;border-radius:12px;border:1px dashed rgba(15,23,42,0.06);display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#ffffff,#fcfeff);overflow:hidden}
+      .preview-area img{max-height:100%;max-width:100%;border-radius:10px;object-fit:contain}
+
+      /* right panel (controls) */
+      /* allow flex children to shrink properly to avoid overflow (fixes uploader growing the card) */
+      .control-card, .step > div { min-width: 0; }
+
+      .control-card{background:linear-gradient(180deg,var(--card),#fbfdfd);border-radius:16px;padding:20px;box-shadow:0 8px 24px rgba(15,23,42,0.05);border:1px solid rgba(15,23,42,0.04);overflow:hidden}
+      .step{display:flex;gap:14px;align-items:flex-start;margin-bottom:18px}
+      .step-number{width:56px;height:56px;border-radius:12px;background:linear-gradient(180deg,#e6fffb,#e6fffb);display:flex;align-items:center;justify-content:center;font-weight:800;color:#064e3b;border:1px solid rgba(6,78,59,0.06);font-size:18px}
+      .step h4{margin:0 0 6px 0;font-size:16px}
+      .step p{margin:0;color:var(--muted);font-size:13px}
+
+      /* make uploader behave (fill parent, don't force width) */
+      .uploader{border-radius:12px;border:1px dashed rgba(15,23,42,0.06);padding:14px;background:linear-gradient(180deg,#ffffff,#fbfbfc);cursor:pointer;transition:transform .12s,box-shadow .12s;box-sizing:border-box;width:100%;max-width:100%;overflow:hidden}
+      .uploader.dragover{transform:translateY(-4px);box-shadow:0 18px 40px rgba(6,182,212,0.06);border-color:var(--accent)}
+      .uploader .hint{display:flex;align-items:center;gap:12px}
+      .uploader .hint .icon{width:48px;height:48px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;color:#04263a;font-weight:800}
+
+      /* uploader preview constraints - IMPORTANT: prevents the image from growing the control column */
+      #uploaderPreview{overflow:hidden;max-width:100%;box-sizing:border-box}
+      #uploaderPreview img, #previewThumb, .uploader img { max-width:100%; height:auto; max-height:160px; display:block; border-radius:10px }
+
+      .big-btn{padding:.75rem 1.1rem;font-size:16px;border-radius:12px}
+      .btn-ghost{background:transparent;border:1px solid rgba(15,23,42,0.04)}
+
+      .result-badge{display:inline-block;padding:.45rem .9rem;border-radius:12px;background:linear-gradient(90deg,#ecfeff,#e6fffa);color:#064e3b;border:1px solid rgba(6,78,59,0.06);font-weight:700}
+
+      .annotated-large{max-width:100%;max-height:220px;object-fit:contain;border-radius:10px;border:1px solid rgba(15,23,42,0.04);display:block}
+
+      .history{max-height:180px;overflow:auto;border-radius:10px;padding:10px;border:1px solid rgba(15,23,42,0.04);background:#fff}
+
+      .muted{color:var(--muted)}
+
+      footer{margin-top:22px;text-align:center;color:var(--muted);font-size:13px}
+
+      /* history sidebar (offcanvas styles tweak) */
+      .offcanvas-header .btn-close{filter:grayscale(1)}
+
+      @media (max-width:1100px){ .main-grid{grid-template-columns:1fr 360px} }
+      @media (max-width:900px){ .main-grid{grid-template-columns:1fr; } .preview-area{height:420px} }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo">CD</div>
+          <div>
+            <div class="title">Chicken Disease Detector</div>
+            <div class="subtitle">Faster triage for small-scale poultry care — clear photos preferred</div>
+          </div>
         </div>
-        <div class="mb-3">
-          <h5>Annotated Image:</h5>
-          <img src="{{ url_for('static', filename='annotated_frame.jpg') }}"
-               alt="Annotated Frame"
-               class="img-fluid border" />
+
+        <div class="d-flex align-items-center gap-3">
+          <div class="text-end muted small">
+            <div>Model</div>
+            <div style="font-weight:700">TF Keras</div>
+          </div>
+
+          <!-- NEW: History toggle (offcanvas) -->
+          <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="offcanvas" data-bs-target="#historySidebar" aria-controls="historySidebar">
+            History
+          </button>
+
+          <!-- NEW: Settings modal toggle -->
+          <button id="openSettingsBtn" class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="modal" data-bs-target="#settingsModal">
+            Settings
+          </button>
+
+          <button id="healthCheck" class="btn btn-outline-secondary btn-sm">Health</button>
         </div>
-      {% elif message %}
-        <div class="alert alert-warning">
-          <p>{{ message }}</p>
-        </div>
-      {% endif %}
+      </header>
+
+      <main class="main-grid">
+        <!-- left: visual preview -->
+        <section class="panel-large">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+              <div style="font-weight:800;font-size:18px">Live Preview</div>
+              <div class="muted small">Annotated detection will appear here after analysis</div>
+            </div>
+            <div class="muted small">Accepted: JPG, PNG</div>
+          </div>
+
+          <div class="preview-area" id="previewArea">
+            <div class="muted small text-center">No image yet — upload or capture to begin</div>
+            <img id="previewLarge" class="d-none" alt="preview large" />
+          </div>
+
+          <div class="d-flex gap-3 align-items-center mt-3">
+            <button id="analyzeBtnLarge" class="btn btn-success big-btn" disabled>Analyze</button>
+            <button id="downloadAnnotated" class="btn btn-outline-secondary big-btn btn-ghost d-none">Download Annotated</button>
+            <div id="statusWrap" class="ms-auto text-end">
+              <div class="muted small">Status</div>
+              <div id="statusText" style="font-weight:800">Idle</div>
+            </div>
+          </div>
+
+          <div class="mt-4">
+            <div style="font-weight:800;margin-bottom:8px">Last result</div>
+            <div class="d-flex gap-3 align-items-center">
+              <div id="resultBadge" class="result-badge">—</div>
+              <div id="diseaseLabel" style="font-weight:700">—</div>
+            </div>
+            <div id="diseaseDesc" class="muted small mt-2">Model suggestions — consult a vet for confirmation.</div>
+          </div>
+        </section>
+
+        <!-- right: controls -->
+        <aside class="control-card">
+          <!-- Step 1: Upload -->
+          <div class="step">
+            <div class="step-number">1</div>
+            <div style="flex:1">
+              <h4>Upload / Capture</h4>
+              <p class="muted">Drag & drop, browse files or trigger a remote capture.</p>
+
+              <div id="uploader" class="uploader mt-2" tabindex="0">
+                <input id="fileInput" type="file" accept="image/*" hidden>
+                <div class="hint">
+                  <div class="icon">↥</div>
+                  <div>
+                    <div style="font-weight:700">Drop an image</div>
+                    <div class="muted small">or <span id="browseLink" style="color:var(--accent);cursor:pointer">browse</span></div>
+                  </div>
+                </div>
+
+                <div id="uploaderPreview" class="mt-3 d-none">
+                  <img id="previewThumb" class="annotated-large" alt="thumb" />
+                </div>
+
+                <div id="uploadingOverlay" class="d-none" style="margin-top:10px">
+                  <div class="muted small">Preparing image…</div>
+                </div>
+              </div>
+
+              <div class="d-flex gap-2 mt-3">
+                <button id="captureBtn" class="btn btn-outline-secondary flex-grow-1">Capture</button>
+                <button id="clearBtn" class="btn btn-sm btn-light">Clear</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 2: Analyze -->
+          <div class="step">
+            <div class="step-number">2</div>
+            <div style="flex:1">
+              <h4>Analyze</h4>
+              <p class="muted">Send the image to the model for classification and object detection.</p>
+              <div class="d-flex gap-2 mt-2">
+                <button id="analyzeBtnSide" class="btn btn-success flex-grow-1 big-btn">Analyze Now</button>
+                <button id="analyzeJsonBtn" class="btn btn-outline-secondary big-btn btn-ghost">Analyze (JSON)</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 3: Commands & History -->
+          <div class="step">
+            <div class="step-number">3</div>
+            <div style="flex:1">
+              <h4>Commands & History</h4>
+              <p class="muted">Trigger remote capture or review recent detections.</p>
+
+              <div class="d-flex gap-2 mt-2 mb-2">
+                <button id="sendCaptureBtn" class="btn btn-outline-primary">Send Capture</button>
+                <button id="refreshHistory" class="btn btn-sm btn-light">Refresh</button>
+              </div>
+
+              <div class="history" id="historyItems"><div class="muted small">No recent detections</div></div>
+            </div>
+          </div>
+
+          <!-- Step 4: Guidance -->
+          <div class="step">
+            <div class="step-number">4</div>
+            <div style="flex:1">
+              <h4>Care & Tips</h4>
+              <p class="muted">Isolate affected birds and contact a veterinarian for any positive detection.</p>
+              <div class="d-flex gap-2 mt-2">
+                <a href="#" class="btn btn-sm btn-outline-secondary">Vet tips</a>
+                <a href="#" class="btn btn-sm btn-outline-secondary">Checklist</a>
+              </div>
+            </div>
+          </div>
+
+        </aside>
+      </main>
+
+      <footer>Place this file in <code>templates/index.html</code>. Annotated images are served from <code>/static/annotated_frame.jpg</code>.</footer>
     </div>
-  </div>
 
-  <script>
-    // Send capture command to the server
-    function sendCommand() {
-      fetch("/command", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({action: "capture"})
-      })
-      .then(response => response.json())
-      .then(data => {
-        console.log("Command response:", data);
-        pollResult(); // Start polling for result
-      })
-      .catch(err => {
-        console.error("Error sending command:", err);
+    <!-- History Offcanvas -->
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="historySidebar" aria-labelledby="historySidebarLabel">
+      <div class="offcanvas-header">
+        <h5 id="historySidebarLabel">Recent Detections</h5>
+        <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+      </div>
+      <div class="offcanvas-body">
+        <div id="historyOffcanvasList">
+          <div class="muted small">No recent detections</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="settingsModalLabel">Settings</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <form id="settingsForm">
+              <div class="mb-3 form-check">
+                <input type="checkbox" class="form-check-input" id="autoRetryCheckbox">
+                <label class="form-check-label" for="autoRetryCheckbox">Auto-retry failed uploads</label>
+              </div>
+              <div class="mb-3 form-check">
+                <input type="checkbox" class="form-check-input" id="showConfidenceCheckbox">
+                <label class="form-check-label" for="showConfidenceCheckbox">Show prediction confidence (if provided)</label>
+              </div>
+              <div class="mb-3">
+                <label for="maxHistory" class="form-label">Max history items</label>
+                <input id="maxHistory" type="number" class="form-control" value="8" min="1" max="50">
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button id="saveSettingsBtn" type="button" class="btn btn-primary" data-bs-dismiss="modal">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Capture Modal for remote Pi camera -->
+    <div class="modal fade" id="captureModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Capture</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body text-center">
+            <div id="captureModalMessage" class="mb-3">Connecting to Pi cam...</div>
+            <div class="progress" style="height:14px;">
+              <div class="progress-bar" role="progressbar" style="width:0%" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>
+            <div id="captureModalStatus" class="mt-3 d-none"><span class="fw-bold"></span></div>
+          </div>
+          <div class="modal-footer">
+            <button id="captureRetryBtn" type="button" class="btn btn-outline-secondary d-none">Retry</button>
+            <button id="captureCloseBtn" type="button" class="btn btn-primary d-none" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+      // DOM refs (updated IDs for new layout)
+      const fileInput = document.getElementById('fileInput');
+      const browseLink = document.getElementById('browseLink');
+      const uploader = document.getElementById('uploader');
+      const uploaderPreview = document.getElementById('uploaderPreview');
+      const previewThumb = document.getElementById('previewThumb');
+      const previewLarge = document.getElementById('previewLarge');
+      const previewArea = document.getElementById('previewArea');
+
+      const analyzeBtnLarge = document.getElementById('analyzeBtnLarge');
+      const analyzeBtnSide = document.getElementById('analyzeBtnSide');
+      const analyzeJsonBtn = document.getElementById('analyzeJsonBtn');
+
+      const captureBtn = document.getElementById('captureBtn');
+      const sendCaptureBtn = document.getElementById('sendCaptureBtn');
+      const refreshHistory = document.getElementById('refreshHistory');
+      const historyItems = document.getElementById('historyItems');
+      const clearBtn = document.getElementById('clearBtn');
+      const downloadAnnotated = document.getElementById('downloadAnnotated');
+
+      const statusText = document.getElementById('statusText');
+      const resultBadge = document.getElementById('resultBadge');
+      const diseaseLabel = document.getElementById('diseaseLabel');
+      const diseaseDesc = document.getElementById('diseaseDesc');
+
+      const serverErrorPanel = document.getElementById('serverErrorPanel');
+      const serverError = document.getElementById('serverError');
+
+      // new UI refs
+      const historyOffcanvasList = document.getElementById('historyOffcanvasList');
+      const autoRetryCheckbox = document.getElementById('autoRetryCheckbox');
+      const showConfidenceCheckbox = document.getElementById('showConfidenceCheckbox');
+      const maxHistoryInput = document.getElementById('maxHistory');
+      const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+
+      let selectedFile = null;
+      let lastOperation = null;
+
+      // file interactions
+      browseLink.addEventListener('click', (e)=>{ e.stopPropagation(); fileInput.click(); });
+      uploader.addEventListener('click', ()=>fileInput.click());
+      uploader.addEventListener('dragenter', e=>{ e.preventDefault(); uploader.classList.add('dragover'); });
+      uploader.addEventListener('dragover', e=>{ e.preventDefault(); });
+      ['dragleave','drop'].forEach(evt=>uploader.addEventListener(evt, e=>{ e.preventDefault(); uploader.classList.remove('dragover'); }));
+
+      uploader.addEventListener('drop', e=>{
+        const dt = e.dataTransfer;
+        if(dt && dt.files && dt.files.length) handleFile(dt.files[0]);
       });
-    }
 
-    // Poll /result every 3 seconds to get latest detection result
-    function pollResult() {
-      const interval = setInterval(() => {
-        fetch("/result")
-          .then(response => response.json())
-          .then(data => {
-            if (data.disease) {
-              clearInterval(interval);
-              showResult(data);
+      fileInput.addEventListener('change', e=>{ if(e.target.files && e.target.files[0]) handleFile(e.target.files[0]); });
+
+      function handleFile(file){
+        if(!file.type.startsWith('image/')) return alert('Please upload an image file.');
+        selectedFile = file;
+
+        const reader = new FileReader();
+        reader.onload = ev => {
+          // show small thumb and large preview
+          if(previewThumb){ previewThumb.src = ev.target.result; uploaderPreview.classList.remove('d-none'); }
+          if(previewLarge){ previewLarge.src = ev.target.result; previewLarge.classList.remove('d-none'); if(previewArea) previewArea.querySelector('.muted')?.classList.add('d-none'); }
+
+          // enable analyze buttons
+          analyzeBtnLarge.disabled = false;
+          analyzeBtnSide.disabled = false;
+        };
+        reader.readAsDataURL(file);
+        // clear previous result
+        resetResult();
+      }
+
+      clearBtn.addEventListener('click', ()=>{
+        selectedFile = null;
+        if(previewThumb){ previewThumb.src=''; uploaderPreview.classList.add('d-none'); }
+        if(previewLarge){ previewLarge.src=''; previewLarge.classList.add('d-none'); if(previewArea) previewArea.querySelector('.muted')?.classList.remove('d-none'); }
+        analyzeBtnLarge.disabled = true; analyzeBtnSide.disabled = true;
+        resetResult();
+      });
+
+      // analyze action: uses same fallback helpers as before but simplified for clarity
+      async function postWithFallback(endpoints, formData){
+        let lastErr = null;
+        for(const url of endpoints){
+          try{
+            const res = await fetch(url, { method: 'POST', body: formData, credentials: 'same-origin' });
+            if(res.ok) return res;
+            const bodyText = await res.text();
+            lastErr = { url, status: res.status, body: bodyText };
+            if(res.status === 405) continue; // try next
+            // try next on redirect or other non-ok
+            continue;
+          }catch(e){ lastErr = { url, status: 'network', body: e.message || String(e) }; continue; }
+        }
+        throw lastErr || { status:'unknown', body:'All requests failed' };
+      }
+
+      function setBusy(isBusy){
+        if(isBusy){
+          statusText.textContent = 'Working...';
+          analyzeBtnLarge.disabled = true; analyzeBtnSide.disabled = true; analyzeJsonBtn.disabled = true;
+        } else {
+          statusText.textContent = 'Idle';
+          analyzeBtnLarge.disabled = !selectedFile; analyzeBtnSide.disabled = !selectedFile; analyzeJsonBtn.disabled = !selectedFile;
+        }
+      }
+
+      function resetResult(){
+        resultBadge.textContent = '—';
+        diseaseLabel.textContent = '—';
+        diseaseDesc.textContent = 'Model suggestions — consult a vet for confirmation.';
+        if(downloadAnnotated) downloadAnnotated.classList.add('d-none');
+      }
+
+      // wire analyze buttons
+      analyzeBtnLarge.addEventListener('click', async ()=> runAnalyze(['/analyze','/analyze/']));
+      analyzeBtnSide.addEventListener('click', async ()=> runAnalyze(['/analyze','/analyze/']));
+      analyzeJsonBtn.addEventListener('click', async ()=> runAnalyze(['/analyze','/analyze/'], true));
+
+      async function runAnalyze(endpoints, expectJson=false){
+        if(!selectedFile) return alert('No file selected');
+        setBusy(true);
+        const formData = new FormData();
+        formData.append('file', selectedFile, selectedFile.name);
+
+        lastOperation = async ()=> postWithFallback(endpoints, formData);
+
+        try{
+          const res = await lastOperation();
+
+          // try to parse JSON response (server should return JSON). If parsing fails,
+          // we fall back to fetching /result as a secondary source.
+          let data = null;
+          try{
+            data = await res.json();
+          }catch(parseErr){
+            console.warn('Analyze response was not JSON or could not be parsed', parseErr);
+          }
+
+          if(!data){
+            // fallback: try fetching /result (keeps backward compatibility)
+            try{
+              const r = await fetch('/result');
+              if(r.ok){
+                const resJson = await r.json();
+                if(resJson.image_url || resJson.disease){
+                  data = resJson;
+                }
+              }
+            }catch(e){ console.warn('Fallback /result failed', e); }
+          }
+
+          if(!data || data.error){
+            resultBadge.textContent = 'No detection';
+            diseaseLabel.textContent = 'No chicken detected';
+            setBusy(false);
+            return;
+          }
+
+          // primary UI updates from analyze response
+          resultBadge.textContent = data.disease || 'Unknown';
+          diseaseLabel.textContent = data.disease || 'Unknown';
+          diseaseDesc.textContent = data.note || 'Model suggestions — consult a vet for confirmation.';
+
+          // if analyze returned an image_url, use it immediately (preferred)
+          if(data.image_url){
+            const imageUrl = data.image_url + '?_=' + Date.now();
+            if(previewLarge){ previewLarge.src = imageUrl; previewLarge.classList.remove('d-none'); if(previewArea) previewArea.querySelector('.muted')?.classList.add('d-none'); }
+            if(previewThumb){ previewThumb.src = imageUrl; uploaderPreview.classList.remove('d-none'); }
+            if(downloadAnnotated) { downloadAnnotated.href = data.image_url; downloadAnnotated.classList.remove('d-none'); }
+            addHistoryEntry(data.disease || resultBadge.textContent, data.image_url);
+          } else {
+            // last resort: try /result for annotated image
+            try{
+              const r2 = await fetch('/result');
+              if(r2.ok){
+                const resJson = await r2.json();
+                if(resJson.image_url){
+                  const imageUrl = resJson.image_url + '?_=' + Date.now();
+                  if(previewLarge){ previewLarge.src = imageUrl; previewLarge.classList.remove('d-none'); if(previewArea) previewArea.querySelector('.muted')?.classList.add('d-none'); }
+                  if(previewThumb){ previewThumb.src = imageUrl; uploaderPreview.classList.remove('d-none'); }
+                  if(downloadAnnotated) { downloadAnnotated.href = resJson.image_url; downloadAnnotated.classList.remove('d-none'); }
+                  addHistoryEntry(resJson.disease || data.disease, resJson.image_url);
+                }
+              }
+            }catch(e){ console.warn('Could not fetch /result', e); }
+          }
+
+        }catch(err){
+          console.error('Analyze failed', err);
+          alert('Analyze failed — open console for details.');
+        }finally{ setBusy(false); }
+      }
+
+      // capture/send capture
+      sendCaptureBtn.addEventListener('click', async ()=>{
+        // show animated modal and run the capture command after progress completes
+        try{
+          setBusy(true);
+
+          const modalEl = document.getElementById('captureModal');
+          const modal = new bootstrap.Modal(modalEl, { backdrop: 'static', keyboard: false });
+          const progressBar = modalEl.querySelector('.progress-bar');
+          const modalStatus = modalEl.querySelector('#captureModalStatus');
+          const modalMessage = modalEl.querySelector('#captureModalMessage');
+          const retryBtn = modalEl.querySelector('#captureRetryBtn');
+          const closeBtn = modalEl.querySelector('#captureCloseBtn');
+
+          // reset UI
+          progressBar.style.width = '0%';
+          progressBar.classList.remove('bg-success','bg-danger');
+          progressBar.classList.add('progress-bar-striped','progress-bar-animated');
+          modalMessage.textContent = 'Connecting to Pi cam...';
+          modalStatus.classList.add('d-none');
+          retryBtn.classList.add('d-none');
+          closeBtn.classList.add('d-none');
+
+          modal.show();
+
+          // animate progress over ~3s
+          let pct = 0;
+          const duration = 3000;
+          const step = 30;
+          const increment = 100 * step / duration;
+          const timer = setInterval(()=>{
+            pct = Math.min(100, pct + increment);
+            progressBar.style.width = pct + '%';
+            if(pct >= 100){
+              clearInterval(timer);
+
+              (async ()=>{
+                try{
+                  const res = await fetch('/command', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'capture' }) });
+                  if(!res.ok) throw new Error('Command failed ' + res.status);
+                  const j = await res.json();
+
+                  // success UI
+                  progressBar.classList.remove('progress-bar-striped','progress-bar-animated');
+                  progressBar.classList.add('bg-success');
+                  modalMessage.textContent = 'Capture sent — ' + (j.action || 'ok');
+                  modalStatus.classList.remove('d-none');
+                  modalStatus.textContent = 'Success';
+                  retryBtn.classList.add('d-none');
+                  closeBtn.classList.remove('d-none');
+                }catch(e){
+                  console.error('Capture failed', e);
+
+                  // failure UI
+                  progressBar.classList.remove('progress-bar-striped','progress-bar-animated');
+                  progressBar.classList.add('bg-danger');
+                  modalMessage.textContent = 'Failed to connect to Pi cam';
+                  modalStatus.classList.remove('d-none');
+                  modalStatus.textContent = 'Failed';
+                  retryBtn.classList.remove('d-none');
+                  closeBtn.classList.remove('d-none');
+                } finally{
+                  setBusy(false);
+                }
+              })();
             }
-          })
-          .catch(err => {
-            console.error("Error fetching result:", err);
-          });
-      }, 3000);
-    }
+          }, step);
 
-    // Update the page dynamically with result
-    function showResult(data) {
-      const container = document.getElementById("result-container");
-      container.innerHTML = `
-        <div class="alert alert-info">
-          <h4>Result:</h4>
-          <p><strong>Disease:</strong> ${data.disease}</p>
-        </div>
-        <div class="mb-3">
-          <h5>Annotated Image:</h5>
-          <img src="${data.image_url}" alt="Annotated Frame" class="img-fluid border" />
-        </div>
-      `;
-    }
-  </script>
-</body>
+          // retry handler
+          retryBtn.onclick = ()=>{ modal.hide(); setTimeout(()=> sendCaptureBtn.click(), 200); };
+          closeBtn.onclick = ()=>{ modal.hide(); };
+
+        }catch(e){ console.error(e); alert('Capture command failed — check server logs'); setBusy(false); }
+      });
+
+      // also wire the small "Capture" button (in the uploader area) to reuse the remote-capture flow
+      captureBtn.addEventListener('click', ()=> sendCaptureBtn.click());
+
+      // simple history helper
+      function addHistoryEntry(disease, image_url){
+        const node = document.createElement('div');
+        node.className = 'd-flex align-items-center gap-2 mb-2';
+        const thumb = document.createElement('img');
+        thumb.src = image_url; thumb.style.width = '64px'; thumb.style.height = '48px'; thumb.style.objectFit = 'cover'; thumb.style.borderRadius = '6px';
+        const txt = document.createElement('div');
+        txt.innerHTML = `<div style="font-weight:700">${escapeHtml(disease||'Unknown')}</div><div class='muted small'>${new Date().toLocaleString()}</div>`;
+        node.appendChild(thumb); node.appendChild(txt);
+        if(historyItems && historyItems.firstChild && historyItems.firstChild.classList && historyItems.firstChild.classList.contains('muted')) historyItems.innerHTML = '';
+        historyItems.prepend(node);
+        while(historyItems.children.length>8) historyItems.removeChild(historyItems.lastChild);
+
+        // also add to offcanvas history
+        if(historyOffcanvasList){
+          if(historyOffcanvasList.firstChild && historyOffcanvasList.firstChild.classList && historyOffcanvasList.firstChild.classList.contains('muted')) historyOffcanvasList.innerHTML = '';
+          const node2 = node.cloneNode(true);
+          historyOffcanvasList.prepend(node2);
+          while(historyOffcanvasList.children.length>maxHistoryInput.value) historyOffcanvasList.removeChild(historyOffcanvasList.lastChild);
+        }
+      }
+
+      function escapeHtml(s){ return String(s).replace(/[&<>&"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]); }
+
+      // settings: load/save
+      function loadSettings(){
+        try{
+          const cfg = JSON.parse(localStorage.getItem('cdd_settings') || '{}');
+          autoRetryCheckbox.checked = !!cfg.autoRetry;
+          showConfidenceCheckbox.checked = !!cfg.showConfidence;
+          maxHistoryInput.value = cfg.maxHistory || 8;
+        }catch(e){ console.warn('Could not load settings', e); }
+      }
+
+      function saveSettings(){
+        const cfg = { autoRetry: !!autoRetryCheckbox.checked, showConfidence: !!showConfidenceCheckbox.checked, maxHistory: parseInt(maxHistoryInput.value) || 8 };
+        localStorage.setItem('cdd_settings', JSON.stringify(cfg));
+      }
+
+      saveSettingsBtn.addEventListener('click', ()=>{ saveSettings(); alert('Settings saved'); });
+
+      // wire refresh history
+      refreshHistory.addEventListener('click', ()=>{ alert('Refresh: implement /history on the server to populate this list.'); });
+
+      // health check
+      const healthCheck = document.getElementById('healthCheck');
+      healthCheck.addEventListener('click', async ()=>{
+        try{ const r = await fetch('/'); alert('Server status: ' + r.status); }catch(e){ alert('Health check failed'); }
+      });
+
+      // init
+      loadSettings();
+      setBusy(false);
+      resetResult();
+    </script>
+  </body>
 </html>
-

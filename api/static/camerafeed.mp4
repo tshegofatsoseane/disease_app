@@ -1,0 +1,4 @@
+# This is a placeholder for the camera feed video file
+# You need to place an actual MP4 video file here named 'camerafeed.mp4'
+# The video should show chickens or poultry for demonstration purposes
+# Duration should be at least 10 seconds as the frontend plays it for 10 seconds
